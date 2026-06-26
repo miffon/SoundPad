@@ -1,14 +1,21 @@
 # SoundPad
 
 SoundPad 是一個音效板 GUI
+
+![img1](img/main-window.png)
+
 1. 每頁有 16 個 pad, 可以新增無限多頁
 2. drag-and-drop 放入 WAV 或 MP3
-3. 右鍵 pad 調整 trim range, fade in/out, gain, playback settings...
-4. 在 waveform 上滾輪縮放, 中鍵 (或 space + 左鍵) 拖動; 右鍵可以快速 preview
-5. 在主畫面選擇音訊輸出裝置
-6. 開始玩你的音效版
-7. 如果玩得太兇或音檔太長變得混亂, 用 Kill 來中斷所有音效播放
-8. Edit Panel 模式可以用來排版
+3. 在主畫面選擇音訊輸出裝置
+4. 開始玩你的音效版
+5. 如果玩得太兇或音檔太長變得混亂, 用 `Kill` 來中斷所有播放中的音效
+6. `Edit Panel` 模式下可以拖曳整理音效版，右鍵拖曳可以複製版塊
+
+![img2](img/setting.png)
+
+7. 右鍵 pad 調整 trim range, fade in/out, gain, playback settings...
+8. 在 waveform 上滾輪縮放, 中鍵 (或 space + 左鍵) 拖動; 右鍵可以快速 preview
+
 
 ## 可運行系統
 
