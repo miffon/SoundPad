@@ -17,7 +17,8 @@ PAD_COPY_MIME_TYPE = "application/x-soundpad-pad-copy-id"
 
 
 class PadWidget(QFrame):
-    playRequested = Signal(int)
+    triggerPressed = Signal(int)
+    triggerReleased = Signal(int)
     settingsRequested = Signal(int)
     audioDropped = Signal(int, object)
     deleteRequested = Signal(int)
@@ -82,13 +83,34 @@ class PadWidget(QFrame):
             self.status_label.setText("Drop WAV / MP3")
             self.setProperty("state", "empty")
         elif cache_exists:
-            self.status_label.setText("Ready")
+            self.status_label.setText(self._ready_status_text(config))
             self.setProperty("state", "ready")
         else:
             self.status_label.setText("Cache missing")
             self.setProperty("state", "missing")
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def _ready_status_text(self, config: PadConfig) -> str:
+        trigger_labels = {
+            "tap": "",
+            "hold": "Hold",
+            "hold_loop": "Loop",
+        }
+        direction_labels = {
+            "forward": "",
+            "reverse": "Rev",
+            "pingpong": "Ping",
+        }
+        parts = [
+            label
+            for label in (
+                trigger_labels.get(config.trigger_mode, ""),
+                direction_labels.get(config.playback_direction, ""),
+            )
+            if label
+        ]
+        return " / ".join(parts) if parts else "Ready"
 
     def _set_drag_active(self, active: bool) -> None:
         self.setProperty("dragActive", "true" if active else "false")
@@ -172,7 +194,7 @@ class PadWidget(QFrame):
 
         if event.button() == Qt.MouseButton.LeftButton:
             self._set_pressed_active(True)
-            self.playRequested.emit(self.pad_id)
+            self.triggerPressed.emit(self.pad_id)
             event.accept()
             return
         if event.button() == Qt.MouseButton.RightButton:
@@ -212,6 +234,10 @@ class PadWidget(QFrame):
         self._drag_button = None
         if event.button() == Qt.MouseButton.LeftButton:
             self._set_pressed_active(False)
+            if not self._edit_mode:
+                self.triggerReleased.emit(self.pad_id)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.RightButton:
             should_open_settings = self._pending_settings_request and not self._edit_mode
             self._pending_settings_request = False
@@ -225,6 +251,7 @@ class PadWidget(QFrame):
         self._set_pressed_active(False)
         if not self._edit_mode:
             self._pending_settings_request = False
+            self.triggerReleased.emit(self.pad_id)
         super().leaveEvent(event)
 
 
@@ -251,6 +278,9 @@ class WaveformRangeWidget(QFrame):
         self._dragging: str | None = None
         self._last_pan_x: float | None = None
         self._range_drag_anchor_ms: int | None = None
+        self._range_move_anchor_ms: int | None = None
+        self._range_move_start_ms: int | None = None
+        self._range_move_end_ms: int | None = None
         self._space_pressed = False
         self._fade_knob_radius = 8.0
         self._volume_gain = 1.0
@@ -444,6 +474,16 @@ class WaveformRangeWidget(QFrame):
         painter.drawLine(QPointF(start_x, rect.top()), QPointF(start_x, rect.bottom()))
         painter.drawLine(QPointF(end_x, rect.top()), QPointF(end_x, rect.bottom()))
 
+        range_move_line = self._range_move_line_rect(start_x, end_x, rect)
+        if range_move_line.width() > 0:
+            range_move_pen = QPen(qcolor("waveform", "handle"), 4)
+            range_move_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(range_move_pen)
+            painter.drawLine(
+                QPointF(range_move_line.left(), range_move_line.center().y()),
+                QPointF(range_move_line.right(), range_move_line.center().y()),
+            )
+
         fade_pen = QPen(qcolor("waveform", "fade_handle"), 2)
         painter.setPen(fade_pen)
         painter.drawLine(QPointF(fade_in_x, rect.top()), QPointF(fade_in_x, rect.bottom()))
@@ -518,6 +558,11 @@ class WaveformRangeWidget(QFrame):
             self._dragging = "range"
             self._range_drag_anchor_ms = self._x_to_ms(x, rect)
             self._set_range_from_points(self._range_drag_anchor_ms, self._range_drag_anchor_ms)
+        elif self._is_near_range_move_line(position, start_x, end_x, rect):
+            self._dragging = "range_move"
+            self._range_move_anchor_ms = self._x_to_ms(x, rect)
+            self._range_move_start_ms = self._start_ms
+            self._range_move_end_ms = self._end_ms
         else:
             self._dragging = "start" if abs(x - start_x) <= abs(x - end_x) else "end"
         self._move_handle(x, rect)
@@ -541,6 +586,10 @@ class WaveformRangeWidget(QFrame):
                     self._range_drag_anchor_ms,
                     self._x_to_ms(event.position().x(), rect),
                 )
+            event.accept()
+            return
+        if self._dragging == "range_move":
+            self._move_range(event.position().x(), rect)
             event.accept()
             return
         self._move_handle(event.position().x(), rect)
@@ -641,6 +690,9 @@ class WaveformRangeWidget(QFrame):
         self._dragging = None
         self._last_pan_x = None
         self._range_drag_anchor_ms = None
+        self._range_move_anchor_ms = None
+        self._range_move_start_ms = None
+        self._range_move_end_ms = None
 
     def _set_range_from_points(self, first_ms: int, second_ms: int) -> None:
         start_ms = max(0, min(first_ms, second_ms, self._duration_ms))
@@ -670,6 +722,30 @@ class WaveformRangeWidget(QFrame):
             self.set_fades(self._fade_in_ms, max(0, self._end_ms - ms), update=False)
         if self._dragging in {"start", "end"}:
             self.rangeChanged.emit(self._start_ms, self._end_ms)
+        self.update()
+
+    def _move_range(self, x: float, rect: QRectF) -> None:
+        if (
+            self._range_move_anchor_ms is None
+            or self._range_move_start_ms is None
+            or self._range_move_end_ms is None
+        ):
+            return
+
+        delta_ms = self._x_to_ms(x, rect) - self._range_move_anchor_ms
+        start_ms = self._range_move_start_ms + delta_ms
+        end_ms = self._range_move_end_ms + delta_ms
+
+        if start_ms < 0:
+            end_ms -= start_ms
+            start_ms = 0
+        if end_ms > self._duration_ms:
+            start_ms -= end_ms - self._duration_ms
+            end_ms = self._duration_ms
+
+        self._start_ms = max(0, start_ms)
+        self._end_ms = min(self._duration_ms, max(self._start_ms + 1, end_ms))
+        self.rangeChanged.emit(self._start_ms, self._end_ms)
         self.update()
 
     def _ms_to_x(self, ms: int, rect: QRectF) -> float:
@@ -798,6 +874,24 @@ class WaveformRangeWidget(QFrame):
         dy = position.y() - center.y()
         hit_radius = self._fade_knob_radius + 4
         return dx * dx + dy * dy <= hit_radius * hit_radius
+
+    def _range_move_line_rect(self, start_x: float, end_x: float, rect: QRectF) -> QRectF:
+        inset = 12.0
+        line_height = 10.0
+        left = max(rect.left(), start_x + inset)
+        right = min(rect.right(), end_x - inset)
+        if right <= left:
+            return QRectF(left, rect.bottom() - 12.0, 0.0, line_height)
+        return QRectF(left, rect.bottom() - 12.0, right - left, line_height)
+
+    def _is_near_range_move_line(
+        self,
+        position: QPointF,
+        start_x: float,
+        end_x: float,
+        rect: QRectF,
+    ) -> bool:
+        return self._range_move_line_rect(start_x, end_x, rect).contains(position)
 
     def dragEnterEvent(self, event) -> None:  # type: ignore[override]
         if event.mimeData().hasUrls():

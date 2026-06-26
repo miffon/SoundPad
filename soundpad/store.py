@@ -119,6 +119,8 @@ class ProjectStore:
                         f"volume = {float(pad.get('volume', 1.0)):.6g}",
                         f"display_name = {_toml_string(pad.get('display_name', ''))}",
                         f"custom_label = {_toml_string(pad.get('custom_label', ''))}",
+                        f"trigger_mode = {_toml_string(pad.get('trigger_mode', 'tap'))}",
+                        f"playback_direction = {_toml_string(pad.get('playback_direction', 'forward'))}",
                         "",
                     ]
                 )

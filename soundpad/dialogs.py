@@ -5,6 +5,7 @@ from pathlib import Path
 import pygame
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -18,7 +19,16 @@ from PySide6.QtWidgets import (
 
 from .audio_engine import AudioEngine
 from .audio_processing import AudioProcessingError, AudioProcessor
-from .models import PadConfig, db_to_gain, gain_to_db, is_supported_audio_file
+from .models import (
+    PadConfig,
+    PlaybackDirection,
+    TriggerMode,
+    db_to_gain,
+    gain_to_db,
+    is_supported_audio_file,
+    normalize_playback_direction,
+    normalize_trigger_mode,
+)
 from .widgets import WaveformRangeWidget
 
 
@@ -78,9 +88,13 @@ class PadSettingsDialog(QDialog):
         self._syncing_view_controls = False
         self._loading_audio = False
         self._preview_channel: pygame.mixer.Channel | None = None
-        self._preview_start_ms = 0
-        self._preview_end_ms = 0
+        self._preview_playhead_start_ms = 0
+        self._preview_playhead_end_ms = 0
         self._preview_elapsed_ms = 0
+        self._preview_direction: PlaybackDirection = "forward"
+        self._preview_cycle_duration_ms = 0
+        self._preview_loop_enabled = False
+        self._preview_auto_stop = True
 
         self.preview_timer = QTimer(self)
         self.preview_timer.setInterval(30)
@@ -101,6 +115,18 @@ class PadSettingsDialog(QDialog):
         self.label_input = QLineEdit()
         self.label_input.setPlaceholderText("Optional label")
         self.label_input.setText(self.config.custom_label)
+        self.trigger_combo = QComboBox()
+        self.trigger_combo.addItem("Tap", "tap")
+        self.trigger_combo.addItem("Hold", "hold")
+        self.trigger_combo.addItem("Hold Loop", "hold_loop")
+        self.trigger_combo.setCurrentIndex(max(0, self.trigger_combo.findData(self.config.trigger_mode)))
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItem("Forward", "forward")
+        self.direction_combo.addItem("Reverse", "reverse")
+        self.direction_combo.addItem("Ping-pong", "pingpong")
+        self.direction_combo.setCurrentIndex(
+            max(0, self.direction_combo.findData(self.config.playback_direction))
+        )
 
         self.waveform = WaveformRangeWidget()
         self.waveform.set_volume_gain(self.config.volume)
@@ -163,6 +189,16 @@ class PadSettingsDialog(QDialog):
         fade_out_row = self._control_row(self.fade_out_label, self.fade_out_slider)
         gain_row = self._control_row(self.volume_label, self.volume_slider)
 
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+        trigger_caption = plain_label("Trigger Mode")
+        direction_caption = plain_label("Direction")
+        range_row.addWidget(self.range_label, 1)
+        range_row.addWidget(trigger_caption)
+        range_row.addWidget(self.trigger_combo)
+        range_row.addWidget(direction_caption)
+        range_row.addWidget(self.direction_combo)
+
         action_buttons = QHBoxLayout()
         action_buttons.setSpacing(8)
         self.preview_button = QPushButton("Play")
@@ -189,7 +225,7 @@ class PadSettingsDialog(QDialog):
         layout.addWidget(self.warning_label)
         layout.addLayout(label_row)
         layout.addWidget(self.waveform)
-        layout.addWidget(self.range_label)
+        layout.addLayout(range_row)
         layout.addLayout(zoom_row)
         layout.addLayout(position_row)
         layout.addLayout(fade_in_row)
@@ -283,9 +319,13 @@ class PadSettingsDialog(QDialog):
         self.config.volume = 1.0
         self.config.display_name = ""
         self.config.custom_label = ""
+        self.config.trigger_mode = "tap"
+        self.config.playback_direction = "forward"
         self._duration_ms = 0
         self._source_available = False
         self.label_input.clear()
+        self.trigger_combo.setCurrentIndex(max(0, self.trigger_combo.findData("tap")))
+        self.direction_combo.setCurrentIndex(max(0, self.direction_combo.findData("forward")))
         self.waveform.set_waveform([], 0, 0, 0)
         self.waveform.set_volume_gain(1.0)
         self.volume_slider.setValue(gain_to_volume_slider_value(1.0))
@@ -362,21 +402,36 @@ class PadSettingsDialog(QDialog):
             self._stop_preview()
             return
         start_ms, end_ms = self.waveform.range_ms()
-        self._start_preview(start_ms, end_ms)
+        self._start_range_preview(start_ms, end_ms)
 
     def _start_scrub_preview(self, clicked_ms: int) -> None:
-        start_ms, end_ms = self.waveform.range_ms()
-        self._start_preview(max(clicked_ms, start_ms), end_ms)
+        self._start_scrub_preview_from(clicked_ms)
 
-    def _start_preview(self, start_ms: int, end_ms: int) -> None:
+    def _start_range_preview(self, start_ms: int, end_ms: int) -> None:
         if start_ms >= end_ms:
             return
         self._stop_preview()
         self.config.volume = volume_slider_value_to_gain(self.volume_slider.value())
+        direction = self._current_playback_direction()
+        trigger_mode = self._current_trigger_mode()
+        loops = -1 if trigger_mode == "hold_loop" else 0
+        loop_enabled = loops < 0
         source = self.config.source_file
         if source is None or not source.exists():
             if self.cache_path.exists():
-                self._preview_channel = self.audio_engine.play(self.cache_path, self.config.volume)
+                self._preview_channel = self.audio_engine.play(
+                    self.cache_path,
+                    self.config.volume,
+                    loops=loops,
+                    direction=direction,
+                )
+                self._start_preview_timer(
+                    0,
+                    self._duration_ms,
+                    direction,
+                    loop_enabled,
+                    auto_stop=not loop_enabled,
+                )
                 return
             QMessageBox.information(self, "Cannot Preview", "Load or relocate the source audio first.")
             return
@@ -390,20 +445,119 @@ class PadSettingsDialog(QDialog):
                 fade_in_ms,
                 fade_out_ms,
             )
-            self._preview_channel = self.audio_engine.play_segment(preview_clip, self.config.volume)
-            self._preview_start_ms = start_ms
-            self._preview_end_ms = end_ms
-            self._preview_elapsed_ms = 0
-            self.waveform.set_playhead_ms(start_ms)
-            self.preview_button.setText("Stop")
-            self.preview_timer.start()
+            self._preview_channel = self.audio_engine.play_segment(
+                preview_clip,
+                self.config.volume,
+                loops=loops,
+                direction=direction,
+            )
+            self._start_preview_timer(
+                start_ms,
+                end_ms,
+                direction,
+                loop_enabled,
+                auto_stop=not loop_enabled,
+            )
         except AudioProcessingError as exc:
             QMessageBox.warning(self, "Preview Failed", str(exc))
+
+    def _start_scrub_preview_from(self, clicked_ms: int) -> None:
+        self._stop_preview()
+        self.config.volume = volume_slider_value_to_gain(self.volume_slider.value())
+        direction = self._current_playback_direction()
+        try:
+            audio = self._load_preview_source_audio()
+        except AudioProcessingError as exc:
+            QMessageBox.information(self, "Cannot Preview", str(exc))
+            return
+
+        duration_ms = len(audio)
+        if duration_ms <= 0:
+            return
+        clicked_ms = max(0, min(clicked_ms, duration_ms))
+        if direction == "reverse":
+            preview_clip = audio[:clicked_ms]
+            playhead_start_ms = 0
+            playhead_end_ms = clicked_ms
+        else:
+            preview_clip = audio[clicked_ms:]
+            playhead_start_ms = clicked_ms
+            playhead_end_ms = duration_ms
+        if len(preview_clip) <= 0:
+            return
+
+        self._preview_channel = self.audio_engine.play_segment(
+            preview_clip,
+            self.config.volume,
+            direction=direction,
+        )
+        self._start_preview_timer(
+            playhead_start_ms,
+            playhead_end_ms,
+            direction,
+            loop_enabled=False,
+            auto_stop=True,
+        )
+
+    def _load_preview_source_audio(self):
+        source = self.config.source_file
+        if source is not None and source.exists():
+            return self.audio_processor.load_audio(source)
+        if self.cache_path.exists():
+            return self.audio_processor.load_audio(self.cache_path)
+        raise AudioProcessingError("Load or relocate the source audio first.")
+
+    def _start_preview_timer(
+        self,
+        start_ms: int,
+        end_ms: int,
+        direction: PlaybackDirection,
+        loop_enabled: bool,
+        auto_stop: bool,
+    ) -> None:
+        self._preview_playhead_start_ms = min(start_ms, end_ms)
+        self._preview_playhead_end_ms = max(start_ms, end_ms)
+        self._preview_elapsed_ms = 0
+        self._preview_direction = direction
+        self._preview_loop_enabled = loop_enabled
+        self._preview_auto_stop = auto_stop
+        self._preview_cycle_duration_ms = self._preview_cycle_duration()
+        self.waveform.set_playhead_ms(self._preview_playhead_ms(0))
+        self.preview_button.setText("Stop")
+        if self._preview_cycle_duration_ms > 0:
+            self.preview_timer.start()
+
+    def _preview_cycle_duration(self) -> int:
+        one_way_duration = max(0, self._preview_playhead_end_ms - self._preview_playhead_start_ms)
+        if self._preview_direction == "pingpong":
+            return one_way_duration * 2
+        return one_way_duration
+
+    def _preview_playhead_ms(self, elapsed_ms: int) -> int:
+        one_way_duration = max(0, self._preview_playhead_end_ms - self._preview_playhead_start_ms)
+        if one_way_duration <= 0:
+            return self._preview_playhead_start_ms
+
+        cycle_duration = max(1, self._preview_cycle_duration_ms)
+        if self._preview_loop_enabled:
+            phase = elapsed_ms % cycle_duration
+        else:
+            phase = min(elapsed_ms, cycle_duration)
+
+        if self._preview_direction == "reverse":
+            return self._preview_playhead_end_ms - min(phase, one_way_duration)
+        if self._preview_direction == "pingpong":
+            if phase <= one_way_duration:
+                return self._preview_playhead_start_ms + phase
+            return self._preview_playhead_end_ms - min(phase - one_way_duration, one_way_duration)
+        return self._preview_playhead_start_ms + min(phase, one_way_duration)
 
     def _stop_preview(self) -> None:
         self.preview_timer.stop()
         self.audio_engine.stop_channel(self._preview_channel)
         self._preview_channel = None
+        self._preview_loop_enabled = False
+        self._preview_auto_stop = True
         self.waveform.set_playhead_ms(None)
         self.preview_button.setText("Play")
 
@@ -415,15 +569,22 @@ class PadSettingsDialog(QDialog):
             self._stop_preview()
             return
         self._preview_elapsed_ms += self.preview_timer.interval()
-        playhead_ms = self._preview_start_ms + self._preview_elapsed_ms
-        if playhead_ms >= self._preview_end_ms:
+        if self._preview_auto_stop and self._preview_elapsed_ms >= self._preview_cycle_duration_ms:
             self._stop_preview()
             return
-        self.waveform.set_playhead_ms(playhead_ms)
+        self.waveform.set_playhead_ms(self._preview_playhead_ms(self._preview_elapsed_ms))
+
+    def _current_trigger_mode(self) -> TriggerMode:
+        return normalize_trigger_mode(self.trigger_combo.currentData())
+
+    def _current_playback_direction(self) -> PlaybackDirection:
+        return normalize_playback_direction(self.direction_combo.currentData())
 
     def _save(self) -> None:
         self.config.custom_label = self.label_input.text().strip()
         self.config.volume = volume_slider_value_to_gain(self.volume_slider.value())
+        self.config.trigger_mode = self._current_trigger_mode()
+        self.config.playback_direction = self._current_playback_direction()
 
         source = self.config.source_file
         if source is None or not source.exists():

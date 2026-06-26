@@ -3,55 +3,38 @@
 SoundPad 是一個音效板 GUI
 1. 每頁有 16 個 pad, 可以新增無限多頁
 2. drag-and-drop 放入 WAV 或 MP3
-3. 右鍵 pad 調整 trim range, fade in/out 與 gain
-4. 在 waveform 上滾輪縮放, 中鍵 (或 space + 左鍵) 拖動, 右鍵快速 preview
-5. 選擇音訊輸出裝置
-6. 按鍵播放
-7. 可用 Kill 中斷播放
-8. Edit Panel 拖放來排版
+3. 右鍵 pad 調整 trim range, fade in/out, gain, playback settings...
+4. 在 waveform 上滾輪縮放, 中鍵 (或 space + 左鍵) 拖動; 右鍵可以快速 preview
+5. 在主畫面選擇音訊輸出裝置
+6. 開始玩你的音效版
+7. 如果玩得太兇或音檔太長變得混亂, 用 Kill 來中斷所有音效播放
+8. Edit Panel 模式可以用來排版
 
-## 系統需求
+## 可運行系統
 
-* Python 3.14
-* uv
-* Windows / macOS / Linux
-* ffmpeg (for MP3)
+* Windows 10 + 已測試
+* macOS Apple Silicon 已測試 (arm64; Intel 版本未測試)
+* Linux 未測試
 
-如果 MP3 無法正常讀取, 請確認系統中已安裝並可使用 `ffmpeg`
 
-## 安裝
+## MP3 解碼依賴 ffmpeg
 
-clone 專案後, 在專案目錄中執行:
+如果你只用 WAV, 可以不裝
 
-```sh
-uv sync
+如果放入 MP3 後無法正常讀取, 請確認系統中已安裝並可使用 `ffmpeg`
+
+Windows 推薦用 `winget` 安裝：
+
+```powershell
+winget install Gyan.FFmpeg
+ffmpeg -version
 ```
 
-
-## 啟動方式
-
-Windows：
-
-```bat
-soundpad.bat
-```
-
-macOS：
+macOS 推薦用 Homebrew 安裝：
 
 ```sh
-./soundpad.command
-```
-
-Linux / WSL：
-
-```sh
-./soundpad.sh
-```
-
-如果在 macOS 或 Linux 執行時出現權限不足, 請先執行：
-
-```sh
-chmod +x soundpad.command soundpad.sh
+brew install ffmpeg
+ffmpeg -version
 ```
 
 ## 免安裝版
@@ -76,10 +59,49 @@ SoundPad/
   soundpad/config.toml
 ```
 
-macOS 版下載 `SoundPad-macOS.zip`, 解壓後開啟 `SoundPad.app` (未簽章版本第一次啟動可能需要右鍵 Open) 
+macOS 版下載 `SoundPad-macOS.zip`, 解壓後開啟 `SoundPad.app` (可能需要賦予權限才能執行, 詳細請看 release note) 
 
 macOS 版的設定文件與 cache 會放在:
 
 ```text
 ~/Library/Application Support/SoundPad/
+```
+
+## 手動安裝
+
+確保系統已安裝:
+* Python 3.14
+* uv
+
+clone 專案後, 在專案目錄中執行:
+
+```sh
+uv sync
+```
+
+
+## 手動安裝啟動方式
+
+Windows：
+
+```bat
+soundpad.bat
+```
+
+macOS：
+
+```sh
+./soundpad.command
+```
+
+Linux / WSL：
+
+```sh
+./soundpad.sh
+```
+
+如果在 macOS 或 Linux 執行時出現權限不足, 請先執行：
+
+```sh
+chmod +x soundpad.command soundpad.sh
 ```

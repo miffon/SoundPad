@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+import pygame
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -119,6 +120,7 @@ class MainWindow(QMainWindow):
                 self.settings.output_device_name = SYSTEM_DEFAULT_DEVICE
                 self.audio_engine = AudioEngine()
         self.pad_widgets: dict[int, PadWidget] = {}
+        self._active_pad_channels: dict[int, pygame.mixer.Channel | None] = {}
         self.current_page_index = 0
         self.edit_panel_enabled = False
         self._tabs_updating = False
@@ -143,7 +145,7 @@ class MainWindow(QMainWindow):
             toolbar.addWidget(self.edit_panel_button)
             self.kill_button = QPushButton("Kill")
             self.kill_button.setObjectName("killButton")
-            self.kill_button.clicked.connect(self.audio_engine.stop_all)
+            self.kill_button.clicked.connect(self.stop_all_playback)
             toolbar.addWidget(self.kill_button)
             main_layout.addLayout(toolbar)
 
@@ -179,15 +181,38 @@ class MainWindow(QMainWindow):
         self.audio_engine.close()
         super().closeEvent(event)
 
-    def play_pad(self, pad_id: int) -> None:
+    def trigger_pad_pressed(self, pad_id: int) -> None:
         pad = self._pad_by_id(pad_id)
         cache_path = self._cache_path(pad)
         if not cache_path.exists():
             return
+        if pad.trigger_mode in {"hold", "hold_loop"}:
+            self.stop_pad(pad_id)
+        loops = -1 if pad.trigger_mode == "hold_loop" else 0
         try:
-            self.audio_engine.play(cache_path, pad.volume)
+            channel = self.audio_engine.play(
+                cache_path,
+                pad.volume,
+                loops=loops,
+                direction=pad.playback_direction,
+            )
+            if pad.trigger_mode in {"hold", "hold_loop"}:
+                self._active_pad_channels[pad_id] = channel
         except Exception as exc:
             QMessageBox.warning(self, "Playback Failed", str(exc))
+
+    def trigger_pad_released(self, pad_id: int) -> None:
+        pad = self._pad_by_id(pad_id)
+        if pad.trigger_mode in {"hold", "hold_loop"}:
+            self.stop_pad(pad_id)
+
+    def stop_pad(self, pad_id: int) -> None:
+        channel = self._active_pad_channels.pop(pad_id, None)
+        self.audio_engine.stop_channel(channel)
+
+    def stop_all_playback(self) -> None:
+        self.audio_engine.stop_all()
+        self._active_pad_channels.clear()
 
     def open_pad_settings(self, pad_id: int) -> None:
         pad = self._pad_by_id(pad_id)
@@ -212,6 +237,7 @@ class MainWindow(QMainWindow):
         self._replace_pad(updated)
         if updated.is_empty:
             self._delete_cache(previous_cache_path)
+        self.stop_pad(updated.pad_id)
         self.audio_engine.reload(self._cache_path(updated))
         self._save_project()
         self.refresh_pad_widgets()
@@ -241,6 +267,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Audio Error", str(exc))
             return
 
+        self.stop_pad(pad_id)
         cache_path = self.store.cache_path_for_pad(pad_id)
         pad = PadConfig(
             pad_id=pad_id,
@@ -279,6 +306,7 @@ class MainWindow(QMainWindow):
     def clear_pad(self, pad_id: int) -> None:
         page_index, pad_index = self._pad_location(pad_id)
         pad = self.pages[page_index].pads[pad_index]
+        self.stop_pad(pad_id)
         self._delete_cache(self._cache_path(pad))
         self.audio_engine.reload(self._cache_path(pad))
         self.pages[page_index].pads[pad_index] = PadConfig(pad_id=pad.pad_id)
@@ -312,6 +340,7 @@ class MainWindow(QMainWindow):
         target_cache_path = self.store.cache_path_for_pad(target_pad_id)
         previous_target_cache_path = self._cache_path(target_pad)
         source_cache_path = self._cache_path(source_pad)
+        self.stop_pad(target_pad_id)
         if previous_target_cache_path.resolve() != source_cache_path.resolve():
             self._delete_cache(previous_target_cache_path)
 
@@ -335,6 +364,8 @@ class MainWindow(QMainWindow):
             volume=source_pad.volume,
             display_name=source_pad.display_name,
             custom_label=source_pad.custom_label,
+            trigger_mode=source_pad.trigger_mode,
+            playback_direction=source_pad.playback_direction,
         )
 
         cache_ready = False
@@ -409,7 +440,7 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        self.audio_engine.stop_all()
+        self.stop_all_playback()
         for pad in page.pads:
             self._delete_cache(self._cache_path(pad))
             self.audio_engine.reload(self._cache_path(pad))
@@ -465,7 +496,8 @@ class MainWindow(QMainWindow):
 
             for local_index, pad in enumerate(page.pads):
                 widget = PadWidget(pad.pad_id, display_id=local_index + 1)
-                widget.playRequested.connect(self.play_pad)
+                widget.triggerPressed.connect(self.trigger_pad_pressed)
+                widget.triggerReleased.connect(self.trigger_pad_released)
                 widget.settingsRequested.connect(self.open_pad_settings)
                 widget.audioDropped.connect(self.load_audio_into_pad)
                 widget.deleteRequested.connect(self.clear_pad)

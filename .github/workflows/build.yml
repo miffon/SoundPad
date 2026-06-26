@@ -141,6 +141,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
@@ -156,19 +159,34 @@ jobs:
           (cd release-assets/SoundPad-Windows && zip -r ../../release-zips/SoundPad-Windows.zip SoundPad)
           cp release-assets/SoundPad-macOS/SoundPad-macOS.zip release-zips/SoundPad-macOS.zip
 
+      - name: Build release notes
+        run: |
+          set -euo pipefail
+          tag_name="${GITHUB_REF_NAME}"
+          notes_path=".github/release-notes/${tag_name}.md"
+
+          {
+            echo "SoundPad ${tag_name}"
+            echo
+            if [ -f "${notes_path}" ]; then
+              cat "${notes_path}"
+              echo
+            fi
+            cat <<'EOF'
+          Assets:
+          - `SoundPad-Windows.zip`: Windows onefile build. Extract and run `SoundPad/SoundPad.exe`.
+          - `SoundPad-macOS.zip`: macOS app bundle. Extract and open `SoundPad.app`.
+
+          Notes:
+          - Windows builds create `cache/` and `soundpad/config.toml` next to `SoundPad.exe`.
+          - macOS builds are currently unsigned. If macOS blocks the app, click `Done` on the warning, then go to `System Settings` > `Privacy & Security`. Scroll down to the Security section and click `Open Anyway` next to SoundPad.app to trust it.
+          - macOS builds stored configuration and cache files at: `'~/Library/Application Support/SoundPad/'`
+          EOF
+          } > release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: SoundPad ${{ github.ref_name }}
-          body: |
-            SoundPad ${{ github.ref_name }}
-
-            Assets:
-            - `SoundPad-Windows.zip`: Windows onefile build. Extract and run `SoundPad/SoundPad.exe`.
-            - `SoundPad-macOS.zip`: macOS app bundle. Extract and open `SoundPad.app`.
-
-            Notes:
-            - macOS builds are currently unsigned. If macOS blocks the app, click `Done` on the warning, then go to `System Settings` > `Privacy & Security`. Scroll down to the Security section and click `Open Anyway` next to SoundPad.app to trust it.
-            - Windows builds create `cache/` and `soundpad/config.toml` next to `SoundPad.exe`.
-            - macOS builds stored configuration and cache files at: `'~/Library/Application Support/SoundPad/'`
+          body_path: release-body.md
           files: release-zips/*

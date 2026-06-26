@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3"}
 VOLUME_GAIN_MAX_DB = 18.0
 VOLUME_GAIN_MAX = math.pow(10.0, VOLUME_GAIN_MAX_DB / 20.0)
+TriggerMode = Literal["tap", "hold", "hold_loop"]
+PlaybackDirection = Literal["forward", "reverse", "pingpong"]
+TRIGGER_MODES = {"tap", "hold", "hold_loop"}
+PLAYBACK_DIRECTIONS = {"forward", "reverse", "pingpong"}
 
 
 def clamp_volume_gain(gain: float) -> float:
@@ -28,6 +32,20 @@ def db_to_gain(db_value: float) -> float:
     return clamp_volume_gain(math.pow(10.0, float(db_value) / 20.0))
 
 
+def normalize_trigger_mode(value: object) -> TriggerMode:
+    text = str(value)
+    if text in TRIGGER_MODES:
+        return text  # type: ignore[return-value]
+    return "tap"
+
+
+def normalize_playback_direction(value: object) -> PlaybackDirection:
+    text = str(value)
+    if text in PLAYBACK_DIRECTIONS:
+        return text  # type: ignore[return-value]
+    return "forward"
+
+
 @dataclass
 class PadConfig:
     pad_id: int
@@ -40,6 +58,8 @@ class PadConfig:
     volume: float = 1.0
     display_name: str = ""
     custom_label: str = ""
+    trigger_mode: TriggerMode = "tap"
+    playback_direction: PlaybackDirection = "forward"
 
     @property
     def cache_file(self) -> Path | None:
@@ -70,6 +90,8 @@ class PadConfig:
         data["volume"] = clamp_volume_gain(self.volume)
         data["fade_in_ms"] = max(0, int(self.fade_in_ms))
         data["fade_out_ms"] = max(0, int(self.fade_out_ms))
+        data["trigger_mode"] = normalize_trigger_mode(self.trigger_mode)
+        data["playback_direction"] = normalize_playback_direction(self.playback_direction)
         return data
 
     @classmethod
@@ -85,6 +107,8 @@ class PadConfig:
             volume=clamp_volume_gain(float(data.get("volume", 1.0))),
             display_name=str(data.get("display_name", "")),
             custom_label=str(data.get("custom_label", "")),
+            trigger_mode=normalize_trigger_mode(data.get("trigger_mode", "tap")),
+            playback_direction=normalize_playback_direction(data.get("playback_direction", "forward")),
         )
 
 

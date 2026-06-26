@@ -6,7 +6,7 @@ import pygame
 import pygame._sdl2.audio as sdl_audio
 from pydub import AudioSegment
 
-from .models import clamp_volume_gain, gain_to_db
+from .models import PlaybackDirection, clamp_volume_gain, gain_to_db, normalize_playback_direction
 
 
 SYSTEM_DEFAULT_DEVICE = ""
@@ -15,7 +15,7 @@ SYSTEM_DEFAULT_DEVICE = ""
 class AudioEngine:
     def __init__(self, output_device_name: str = SYSTEM_DEFAULT_DEVICE) -> None:
         self.output_device_name = output_device_name
-        self._sounds: dict[tuple[Path, float], pygame.mixer.Sound] = {}
+        self._sounds: dict[tuple[Path, float, PlaybackDirection], pygame.mixer.Sound] = {}
         self._init_mixer(output_device_name)
 
     def _init_mixer(self, output_device_name: str) -> None:
@@ -25,7 +25,13 @@ class AudioEngine:
         pygame.mixer.set_num_channels(32)
         self.output_device_name = output_device_name
 
-    def play(self, cache_path: Path, volume: float) -> pygame.mixer.Channel | None:
+    def play(
+        self,
+        cache_path: Path,
+        volume: float,
+        loops: int = 0,
+        direction: PlaybackDirection = "forward",
+    ) -> pygame.mixer.Channel | None:
         cache_path = cache_path.resolve()
         if not cache_path.exists():
             raise FileNotFoundError(cache_path)
@@ -33,23 +39,32 @@ class AudioEngine:
         if gain <= 0.0:
             return None
 
-        sound_key = (cache_path, round(gain, 4) if gain > 1.0 else 1.0)
+        direction = normalize_playback_direction(direction)
+        sound_key = (cache_path, round(gain, 4) if gain > 1.0 else 1.0, direction)
         sound = self._sounds.get(sound_key)
         if sound is None:
-            sound = self._load_sound(cache_path, gain)
+            sound = self._load_sound(cache_path, gain, direction)
             self._sounds[sound_key] = sound
 
         sound.set_volume(min(1.0, gain))
-        return sound.play()
+        return sound.play(loops=loops)
 
-    def play_segment(self, audio: AudioSegment, volume: float) -> pygame.mixer.Channel | None:
+    def play_segment(
+        self,
+        audio: AudioSegment,
+        volume: float,
+        loops: int = 0,
+        direction: PlaybackDirection = "forward",
+    ) -> pygame.mixer.Channel | None:
         gain = clamp_volume_gain(volume)
         if gain <= 0.0:
             return None
 
+        direction = normalize_playback_direction(direction)
+        audio = self._apply_direction(audio, direction)
         sound = self._sound_from_segment(audio, gain)
         sound.set_volume(min(1.0, gain))
-        return sound.play()
+        return sound.play(loops=loops)
 
     def list_output_devices(self) -> list[str]:
         try:
@@ -82,13 +97,27 @@ class AudioEngine:
     def close(self) -> None:
         pygame.mixer.quit()
 
-    def _load_sound(self, cache_path: Path, gain: float) -> pygame.mixer.Sound:
-        if gain <= 1.0:
+    def _load_sound(
+        self,
+        cache_path: Path,
+        gain: float,
+        direction: PlaybackDirection,
+    ) -> pygame.mixer.Sound:
+        if gain <= 1.0 and direction == "forward":
             return pygame.mixer.Sound(str(cache_path))
 
         audio = AudioSegment.from_file(cache_path)
-        amplified = audio + gain_to_db(gain)
-        return self._sound_from_segment(amplified, 1.0)
+        audio = self._apply_direction(audio, direction)
+        if gain > 1.0:
+            audio = audio + gain_to_db(gain)
+        return self._sound_from_segment(audio, 1.0)
+
+    def _apply_direction(self, audio: AudioSegment, direction: PlaybackDirection) -> AudioSegment:
+        if direction == "reverse":
+            return audio.reverse()
+        if direction == "pingpong":
+            return audio + audio.reverse()
+        return audio
 
     def _sound_from_segment(self, audio: AudioSegment, gain: float) -> pygame.mixer.Sound:
         if gain > 1.0:
