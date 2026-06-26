@@ -1,0 +1,76 @@
+[text]
+primary = "#edf0f4"
+secondary = "#aab2bf"
+strong = "#ffffff"
+warning = "#ffca58"
+
+[surface]
+window = "#20242b"
+panel = "#2b3038"
+panel_pressed = "#20262f"
+panel_empty = "#262b33"
+panel_ready = "#263830"
+panel_missing = "#3a3026"
+input = "#2b3038"
+menu = "#2b3038"
+dialog = "#20242b"
+border = "#4d5664"
+border_muted = "#3b424d"
+accent = "#67d5b5"
+accent_muted = "#3f695d"
+selection = "#465161"
+drag_hover_border = "#6ee7ff"
+
+[button.default]
+normal = "#39414d"
+hover = "#465161"
+pressed = "#303846"
+border = "#4d5664"
+text = "#edf0f4"
+
+[button.danger]
+normal = "#6b2f35"
+hover = "#803942"
+pressed = "#57272d"
+border = "#c75f68"
+text = "#ffffff"
+
+[button.edit]
+normal = "#51415f"
+hover = "#604e70"
+pressed = "#443750"
+border = "#806aa0"
+text = "#ffffff"
+
+[button.active]
+normal = "#3f695d"
+hover = "#4b7b6e"
+pressed = "#33564d"
+border = "#67d5b5"
+text = "#ffffff"
+
+# Windows 專用：用 pywinstyles 調整系統 title bar；macOS/Linux 會忽略。
+[platform.windows_title_bar]
+enabled = true
+style = "dark"
+header_color = "#20242b"
+title_color = "#edf0f4"
+border_color = "#3b424d"
+
+[waveform]
+background = "#16181d"
+empty_text = "#7f8794"
+wave = "#67d5b5"
+selection = "#ffffff"
+selection_alpha = 34
+fade_region = "#ffca58"
+fade_region_alpha = 50
+fade_slope = "#ffffff"
+handle = "#ffca58"
+fade_handle = "#f08f5f"
+knob_border = "#20242b"
+zoom_text = "#aab2bf"
+playhead = "#6ee7ff"
+db_line = "#edf0f4"
+db_line_alpha = 72
+db_label = "#aab2bf"

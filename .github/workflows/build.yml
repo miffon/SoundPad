@@ -1,0 +1,174 @@
+name: Build SoundPad
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build icons
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          uv run python tools/build_icons.py
+
+      - name: Build with Nuitka
+        run: >
+          uv run
+          --with nuitka
+          --with ordered-set
+          --with zstandard
+          python -m nuitka
+          --onefile
+          --enable-plugin=pyside6
+          --windows-console-mode=disable
+          --assume-yes-for-downloads
+          --windows-icon-from-ico=soundpad/assets/app-icon.ico
+          --output-dir=dist
+          --output-filename=SoundPad
+          main.py
+
+      - name: Package Windows artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exePath = Get-ChildItem -Path dist -File -Filter "SoundPad.exe" | Select-Object -First 1
+          if (-not $exePath) {
+            throw "SoundPad.exe was not found under dist."
+          }
+
+          New-Item -ItemType Directory -Force -Path artifact\SoundPad\soundpad\assets | Out-Null
+          Copy-Item -Path $exePath.FullName -Destination artifact\SoundPad\SoundPad.exe -Force
+          Copy-Item -Path soundpad\theme.toml -Destination artifact\SoundPad\soundpad\theme.toml -Force
+          Copy-Item -Path soundpad\assets\* -Destination artifact\SoundPad\soundpad\assets -Recurse -Force
+          Get-ChildItem -Path artifact -Recurse | Select-Object FullName, Length
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundPad-Windows
+          path: artifact/
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build icons
+        run: |
+          export QT_QPA_PLATFORM=offscreen
+          uv run python tools/build_icons.py
+
+      - name: Build app bundle with Nuitka
+        run: >
+          uv run
+          --with nuitka
+          --with ordered-set
+          --with zstandard
+          python -m nuitka
+          --standalone
+          --enable-plugin=pyside6
+          --macos-create-app-bundle
+          --macos-app-icon=soundpad/assets/AppIcon.icns
+          --assume-yes-for-downloads
+          --output-dir=dist
+          --output-filename=SoundPad
+          main.py
+
+      - name: Package macOS artifact
+        run: |
+          set -euo pipefail
+          app_path="$(find dist -maxdepth 3 -name '*.app' -type d | head -n 1)"
+          if [ -z "$app_path" ]; then
+            echo "Nuitka .app bundle was not found under dist."
+            find dist -maxdepth 4 -print
+            exit 1
+          fi
+
+          mkdir -p artifact
+          mkdir -p "$app_path/Contents/Resources/soundpad"
+          cp soundpad/theme.toml "$app_path/Contents/Resources/soundpad/theme.toml"
+          cp -R soundpad/assets "$app_path/Contents/Resources/soundpad/assets"
+          cp -R "$app_path" artifact/SoundPad.app
+          chmod +x artifact/SoundPad.app/Contents/MacOS/*
+          xattr -cr artifact/SoundPad.app
+          codesign --force --deep --sign - artifact/SoundPad.app
+          find artifact -maxdepth 4 -print
+          ditto -c -k --sequesterRsrc --keepParent artifact/SoundPad.app SoundPad-macOS.zip
+
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundPad-macOS
+          path: SoundPad-macOS.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: List release assets
+        run: find release-assets -maxdepth 4 -print
+
+      - name: Package release zips
+        run: |
+          set -euo pipefail
+          mkdir -p release-zips
+          (cd release-assets/SoundPad-Windows && zip -r ../../release-zips/SoundPad-Windows.zip SoundPad)
+          cp release-assets/SoundPad-macOS/SoundPad-macOS.zip release-zips/SoundPad-macOS.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SoundPad ${{ github.ref_name }}
+          body: |
+            SoundPad ${{ github.ref_name }}
+
+            Assets:
+            - `SoundPad-Windows.zip`: Windows onefile build. Extract and run `SoundPad/SoundPad.exe`.
+            - `SoundPad-macOS.zip`: macOS app bundle. Extract and open `SoundPad.app`.
+
+            Notes:
+            - macOS builds are currently unsigned. If macOS blocks the app, click `Done` on the warning, then go to `System Settings` > `Privacy & Security`. Scroll down to the Security section and click `Open Anyway` next to SoundPad.app to trust it.
+            - Windows builds create `cache/` and `soundpad/config.toml` next to `SoundPad.exe`.
+            - macOS builds stored configuration and cache files at: `'~/Library/Application Support/SoundPad/'`
+          files: release-zips/*
